@@ -1,0 +1,1 @@
+"# vide¢megoszt sok" 

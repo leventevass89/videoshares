@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UTube - Kezdőlap</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .video-card { 
+            transition: transform 0.2s; 
+            cursor: pointer; 
+            border: none;
+        }
+        .video-card:hover { 
+            transform: scale(1.03); 
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1) !important;
+        }
+        .navbar-brand { 
+            font-weight: bold; 
+            color: #ff0000 !important; 
+            font-size: 1.5rem;
+        }
+        .card-img-top {
+            background: #e9ecef;
+            height: 180px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #adb5bd;
+        }
+    </style>
+</head>
+<body class="bg-light">
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4 shadow-sm">
+        <div class="container">
+            <a class="navbar-brand" href="/">UTube</a>
+            <div class="ms-auto d-flex align-items-center">
+                <a href="login.html" id="loginBtn" class="btn btn-outline-light me-2">Bejelentkezés</a>
+                <a href="regisztracio.html" id="regBtn" class="btn btn-danger">Regisztráció</a>
+                
+                <a href="feltoltes.html" id="uploadBtn" class="btn btn-warning ms-2" style="display:none;">Videó feltöltése</a>
+                
+                <a href="profil.html" id="profilGomb" class="btn btn-primary ms-2" style="display:none;">Profilom</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>Felkapott videók</h2>
+            <span class="badge bg-secondary" id="videoCount">0 videó</span>
+        </div>
+        
+        <div id="videoGrid" class="row">
+            <div class="col-12 text-center py-5">
+                <div class="spinner-border text-danger" role="status">
+                    <span class="visually-hidden">Betöltés...</span>
+                </div>
+                <p class="mt-2 text-muted">Videók betöltése...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadVideos() {
+            const grid = document.getElementById('videoGrid');
+            const videoCountBadge = document.getElementById('videoCount');
+            const profilGomb = document.getElementById('profilGomb');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const loginBtn = document.getElementById('loginBtn');
+            const regBtn = document.getElementById('regBtn');
+
+            // 1. Bejelentkezés ellenőrzése és gombok kezelése
+            const userId = localStorage.getItem('currentUserId');
+            if (userId) {
+                if(profilGomb) profilGomb.style.display = 'block';
+                if(uploadBtn) uploadBtn.style.display = 'block'; // Most már biztosan megjelenik
+                if(loginBtn) loginBtn.style.display = 'none';
+                if(regBtn) regBtn.style.display = 'none';
+            }
+
+            try {
+                // 2. Videók lekérése
+                const res = await fetch('/videos');
+                if (!res.ok) throw new Error('Hiba a lekérdezés során');
+                
+                const videos = await res.json();
+                grid.innerHTML = ''; 
+                videoCountBadge.innerText = `${videos.length} videó`;
+
+                if (videos.length === 0) {
+                    grid.innerHTML = '<div class="col-12 text-center text-muted"><p>Még nincsenek feltöltött videók.</p></div>';
+                    return;
+                }
+
+                // 3. Videók kirajzolása
+                videos.forEach(v => {
+                    // JSONB mezők elérése (metaadatok.hossz és metaadatok.minoseg)
+                    const hossz = v.metaadatok?.hossz || '--';
+                    const minoseg = v.metaadatok?.minoseg || 'SD';
+
+                    grid.innerHTML += `
+                        <div class="col-md-4 col-sm-6 mb-4">
+                            <div class="card h-100 shadow-sm video-card">
+                                <div class="card-img-top">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="bi bi-play-circle-fill" viewBox="0 0 16 16">
+                                        <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0M6.79 5.093A.5.5 0 0 0 6 5.5v5a.5.5 0 0 0 .79.407l3.5-2.5a.5.5 0 0 0 0-.814z"/>
+                                    </svg>
+                                </div>
+                                <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center pb-0">
+                                    <span class="badge bg-dark">${minoseg}</span>
+                                    <small class="text-muted">${hossz} mp</small>
+                                </div>
+                                <div class="card-body">
+                                    <h5 class="card-title text-truncate">${v.cim}</h5>
+                                    <p class="card-text text-muted small" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
+                                        ${v.leiras || 'Nincs leírás.'}
+                                    </p>
+                                </div>
+                                <div class="card-footer bg-white border-0 pt-0">
+                                    <button class="btn btn-sm btn-outline-danger w-100 mb-2">Megtekintés</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+
+            } catch (err) {
+                console.error("Hiba:", err);
+                grid.innerHTML = `
+                    <div class="col-12">
+                        <div class="alert alert-danger text-center">
+                            Hiba történt a videók betöltésekor.
+                        </div>
+                    </div>`;
+            }
+        }
+
+        window.onload = loadVideos;
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
