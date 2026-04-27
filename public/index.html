@@ -21,12 +21,12 @@
             font-size: 1.5rem;
         }
         .card-img-top {
-            background: #e9ecef;
+            background: #212529;
             height: 180px;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: #adb5bd;
+            color: white;
         }
     </style>
 </head>
@@ -34,13 +34,12 @@
 
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4 shadow-sm">
         <div class="container">
-            <a class="navbar-brand" href="/">UTube</a>
+            <a class="navbar-brand" href="index.html">UTube</a>
             <div class="ms-auto d-flex align-items-center">
                 <a href="login.html" id="loginBtn" class="btn btn-outline-light me-2">Bejelentkezés</a>
                 <a href="regisztracio.html" id="regBtn" class="btn btn-danger">Regisztráció</a>
                 
                 <a href="feltoltes.html" id="uploadBtn" class="btn btn-warning ms-2" style="display:none;">Videó feltöltése</a>
-                
                 <a href="profil.html" id="profilGomb" class="btn btn-primary ms-2" style="display:none;">Profilom</a>
             </div>
         </div>
@@ -53,13 +52,7 @@
         </div>
         
         <div id="videoGrid" class="row">
-            <div class="col-12 text-center py-5">
-                <div class="spinner-border text-danger" role="status">
-                    <span class="visually-hidden">Betöltés...</span>
-                </div>
-                <p class="mt-2 text-muted">Videók betöltése...</p>
             </div>
-        </div>
     </div>
 
     <script>
@@ -71,41 +64,39 @@
             const loginBtn = document.getElementById('loginBtn');
             const regBtn = document.getElementById('regBtn');
 
-            // 1. Bejelentkezés ellenőrzése és gombok kezelése
+            // 1. Felhasználó állapotának ellenőrzése
             const userId = localStorage.getItem('currentUserId');
             if (userId) {
-                if(profilGomb) profilGomb.style.display = 'block';
-                if(uploadBtn) uploadBtn.style.display = 'block'; // Most már biztosan megjelenik
-                if(loginBtn) loginBtn.style.display = 'none';
-                if(regBtn) regBtn.style.display = 'none';
+                profilGomb.style.display = 'block';
+                uploadBtn.style.display = 'block';
+                loginBtn.style.display = 'none';
+                regBtn.style.display = 'none';
             }
 
             try {
-                // 2. Videók lekérése
+                // 2. Videók lekérése a szerverről
                 const res = await fetch('/videos');
-                if (!res.ok) throw new Error('Hiba a lekérdezés során');
-                
                 const videos = await res.json();
+                
                 grid.innerHTML = ''; 
                 videoCountBadge.innerText = `${videos.length} videó`;
 
                 if (videos.length === 0) {
-                    grid.innerHTML = '<div class="col-12 text-center text-muted"><p>Még nincsenek feltöltött videók.</p></div>';
+                    grid.innerHTML = '<div class="col-12 text-center text-muted"><p>Nincsenek még videók.</p></div>';
                     return;
                 }
 
                 // 3. Videók kirajzolása
                 videos.forEach(v => {
-                    // JSONB mezők elérése (metaadatok.hossz és metaadatok.minoseg)
                     const hossz = v.metaadatok?.hossz || '--';
                     const minoseg = v.metaadatok?.minoseg || 'SD';
 
                     grid.innerHTML += `
                         <div class="col-md-4 col-sm-6 mb-4">
-                            <div class="card h-100 shadow-sm video-card">
+                            <div class="card h-100 shadow-sm video-card" onclick="window.location.href='watch.html?id=${v.video_id}'">
                                 <div class="card-img-top">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="bi bi-play-circle-fill" viewBox="0 0 16 16">
-                                        <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0M6.79 5.093A.5.5 0 0 0 6 5.5v5a.5.5 0 0 0 .79.407l3.5-2.5a.5.5 0 0 0 0-.814z"/>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" fill="currentColor" class="bi bi-play-btn-fill" viewBox="0 0 16 16">
+                                        <path d="M0 12V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2m6.79-6.907A.5.5 0 0 0 6 5.5v5a.5.5 0 0 0 .79.407l3.5-2.5a.5.5 0 0 0 0-.814z"/>
                                     </svg>
                                 </div>
                                 <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center pb-0">
@@ -119,7 +110,7 @@
                                     </p>
                                 </div>
                                 <div class="card-footer bg-white border-0 pt-0">
-                                    <button class="btn btn-sm btn-outline-danger w-100 mb-2">Megtekintés</button>
+                                    <a href="watch.html?id=${v.video_id}" class="btn btn-sm btn-outline-danger w-100 mb-2">Megtekintés</a>
                                 </div>
                             </div>
                         </div>
@@ -127,13 +118,8 @@
                 });
 
             } catch (err) {
-                console.error("Hiba:", err);
-                grid.innerHTML = `
-                    <div class="col-12">
-                        <div class="alert alert-danger text-center">
-                            Hiba történt a videók betöltésekor.
-                        </div>
-                    </div>`;
+                console.error("Szerver hiba:", err);
+                grid.innerHTML = '<div class="alert alert-danger">Nem sikerült betölteni a videókat.</div>';
             }
         }
 

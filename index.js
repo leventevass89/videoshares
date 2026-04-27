@@ -107,11 +107,14 @@ app.get('/user-data/:id', async (req, res) => {
 });
 
 const multer = require('multer');
-const upload = multer(); 
+const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit, hogy ne akadjon el a szerver
+});
 
 app.post('/upload', upload.single('videoFile'), async (req, res) => {
     const { cim, leiras, felhasznalo_id, hossz, minoseg } = req.body;
-    const videoData = req.file.buffer; 
+    const videoData = req.file.buffer;
 
     const metaadatok = {
         hossz: parseInt(hossz),
@@ -133,6 +136,104 @@ app.post('/upload', upload.single('videoFile'), async (req, res) => {
         res.status(500).json({ error: 'Hiba a feltöltés során.' });
     }
 });
+
+// Videó fájl kiszolgálása (Streaming)
+app.get('/video-stream/:id', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT video_fajl FROM Video WHERE video_id = $1', [req.params.id]);
+        
+        if (result.rows.length === 0) return res.status(404).send('Videó nem található');
+
+        const videoBuffer = result.rows[0].video_fajl;
+        
+        // Beállítjuk a fejlécet, hogy a böngésző tudja: ez egy videó
+        res.writeHead(200, {
+            'Content-Type': 'video/mp4',
+            'Content-Length': videoBuffer.length
+        });
+        
+        res.end(videoBuffer);
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Szerver hiba');
+    }
+});
+
+// Videó fájl kiszolgálása (Streaming)
+app.get('/video-stream/:id', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT video_fajl FROM Video WHERE video_id = $1', [req.params.id]);
+        
+        if (result.rows.length === 0) return res.status(404).send('Videó nem található');
+
+        const videoBuffer = result.rows[0].video_fajl;
+        
+        // Beállítjuk a fejlécet, hogy a böngésző tudja: ez egy videó
+        res.writeHead(200, {
+            'Content-Type': 'video/mp4',
+            'Content-Length': videoBuffer.length
+        });
+        
+        res.end(videoBuffer);
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Szerver hiba');
+    }
+});
+
+// Videó adatok (cím, leírás) lekérése
+app.get('/video-details/:id', async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT v.cim, v.leiras, v.metaadatok, f.nev as feltolto FROM Video v JOIN Felhasznalo f ON v.felhasznalo_id = f.felhasznalo_id WHERE v.video_id = $1', 
+            [req.params.id]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Hiba az adatok lekérésekor' });
+    }
+});
+
+// Megjegyzések lekérése a videóhoz
+app.get('/comments/:videoId', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT m.szoveg, m.ervenyesseg_eleje, f.nev 
+            FROM Megjegyzes m 
+            JOIN Felhasznalo f ON m.felhasznalo_id = f.felhasznalo_id 
+            WHERE m.video_id = $1 
+            ORDER BY m.ervenyesseg_eleje DESC`, 
+            [req.params.videoId]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Hiba a megjegyzések lekérésekor' });
+    }
+});
+
+app.post('/comments', async (req, res) => {
+    // Figyelj a változónevekre: video_id, felhasznalo_id, szoveg
+    const { video_id, felhasznalo_id, szoveg } = req.body;
+    
+    console.log("Új hozzászólás érkezett:", { video_id, felhasznalo_id, szoveg });
+
+    if (!video_id || !felhasznalo_id || !szoveg) {
+        return res.status(400).json({ error: 'Minden mező kitöltése kötelező!' });
+    }
+
+    try {
+        await pool.query(
+            'INSERT INTO Megjegyzes (video_id, felhasznalo_id, szoveg, ervenyesseg_eleje) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)',
+            [video_id, felhasznalo_id, szoveg]
+        );
+        res.json({ message: 'Megjegyzés hozzáadva!' });
+    } catch (err) {
+        console.error("Adatbázis hiba mentéskor:", err.message);
+        res.status(500).json({ error: 'Hiba a mentéskor: ' + err.message });
+    }
+});
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Szerver fut: http://localhost:${PORT}`));
