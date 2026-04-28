@@ -47,7 +47,29 @@
 
     <div class="container">
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>Felkapott videók</h2>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+                <h2 class="mb-0">Felkapott videók</h2>
+
+                <div class="dropdown">
+                    <button class="btn btn-outline-dark btn-sm dropdown-toggle" type="button" id="katDropdownBtn" data-bs-toggle="dropdown" aria-expanded="false">
+                        Kategóriák: Összes
+                    </button>
+                    <ul class="dropdown-menu" aria-labelledby="katDropdownBtn" id="katDropdownMenu">
+                        <li><span class="dropdown-item-text text-muted small">Betöltés…</span></li>
+                    </ul>
+                </div>
+
+                <div class="dropdown">
+                    <button class="btn btn-outline-dark btn-sm dropdown-toggle" type="button" id="sortDropdownBtn" data-bs-toggle="dropdown" aria-expanded="false">
+                        Rendezés: Legújabb
+                    </button>
+                    <ul class="dropdown-menu" aria-labelledby="sortDropdownBtn" id="sortDropdownMenu">
+                        <li><a class="dropdown-item active" href="#" data-sort="newest">Legújabb</a></li>
+                        <li><a class="dropdown-item" href="#" data-sort="most_viewed">Legnézettebb</a></li>
+                    </ul>
+                </div>
+            </div>
+
             <span class="badge bg-secondary" id="videoCount">0 videó</span>
         </div>
         
@@ -56,6 +78,80 @@
     </div>
 
     <script>
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text == null ? '' : String(text);
+            return div.innerHTML;
+        }
+
+        function formatTags(kategoriak) {
+            const arr = Array.isArray(kategoriak) ? kategoriak : [];
+            if (!arr.length) return '';
+            return arr
+                .map((t) => {
+                    const label = typeof t === 'string' ? t : t && t.megnevezes;
+                    if (!label) return '';
+                    return `<span class="badge bg-secondary me-1 mb-1">${escapeHtml(label)}</span>`;
+                })
+                .join('');
+        }
+
+        let selectedKatId = null;
+        let kategoriakCache = [];
+        let sortMode = 'newest';
+
+        async function loadKategoriakMenu() {
+            const menu = document.getElementById('katDropdownMenu');
+            const btn = document.getElementById('katDropdownBtn');
+            try {
+                const res = await fetch('/kategoriak');
+                if (!res.ok) throw new Error('Szerver hiba');
+                const rows = await res.json();
+                kategoriakCache = Array.isArray(rows) ? rows : [];
+
+                const items = [];
+                items.push(`
+                    <li>
+                        <a class="dropdown-item ${selectedKatId == null ? 'active' : ''}" href="#" data-kat-id="">
+                            Összes
+                        </a>
+                    </li>
+                `);
+                if (kategoriakCache.length) {
+                    items.push('<li><hr class="dropdown-divider"></li>');
+                    for (const k of kategoriakCache) {
+                        items.push(`
+                            <li>
+                                <a class="dropdown-item ${selectedKatId === k.kat_id ? 'active' : ''}" href="#" data-kat-id="${k.kat_id}">
+                                    ${escapeHtml(k.megnevezes)}
+                                </a>
+                            </li>
+                        `);
+                    }
+                }
+
+                menu.innerHTML = items.join('');
+
+                menu.querySelectorAll('[data-kat-id]').forEach((a) => {
+                    a.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        const raw = a.getAttribute('data-kat-id');
+                        selectedKatId = raw ? parseInt(raw, 10) : null;
+
+                        const label = selectedKatId
+                            ? (kategoriakCache.find((x) => x.kat_id === selectedKatId)?.megnevezes || 'Ismeretlen')
+                            : 'Összes';
+                        btn.textContent = `Kategóriák: ${label}`;
+
+                        loadVideos();
+                        loadKategoriakMenu(); // refresh active state
+                    });
+                });
+            } catch {
+                menu.innerHTML = '<li><span class="dropdown-item-text text-danger small">Nem sikerült betölteni</span></li>';
+            }
+        }
+
         async function loadVideos() {
             const grid = document.getElementById('videoGrid');
             const videoCountBadge = document.getElementById('videoCount');
@@ -75,7 +171,11 @@
 
             try {
                 // 2. Videók lekérése a szerverről
-                const res = await fetch('/videos');
+                const params = new URLSearchParams();
+                if (selectedKatId) params.set('kat_id', String(selectedKatId));
+                params.set('sort', sortMode);
+                const url = `/videos?${params.toString()}`;
+                const res = await fetch(url);
                 const videos = await res.json();
                 
                 grid.innerHTML = ''; 
@@ -90,6 +190,7 @@
                 videos.forEach(v => {
                     const hossz = v.metaadatok?.hossz || '--';
                     const minoseg = v.metaadatok?.minoseg || 'SD';
+                    const tagHtml = formatTags(v.kategoriak);
 
                     grid.innerHTML += `
                         <div class="col-md-4 col-sm-6 mb-4">
@@ -100,13 +201,14 @@
                                     </svg>
                                 </div>
                                 <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center pb-0">
-                                    <span class="badge bg-dark">${minoseg}</span>
-                                    <small class="text-muted">${hossz} mp</small>
+                                    <span class="badge bg-dark">${escapeHtml(minoseg)}</span>
+                                    <small class="text-muted">${escapeHtml(hossz)} mp</small>
                                 </div>
                                 <div class="card-body">
-                                    <h5 class="card-title text-truncate">${v.cim}</h5>
+                                    <h5 class="card-title text-truncate">${escapeHtml(v.cim)}</h5>
+                                    <div class="mb-2">${tagHtml}</div>
                                     <p class="card-text text-muted small" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
-                                        ${v.leiras || 'Nincs leírás.'}
+                                        ${escapeHtml(v.leiras || 'Nincs leírás.')}
                                     </p>
                                 </div>
                                 <div class="card-footer bg-white border-0 pt-0">
@@ -123,7 +225,33 @@
             }
         }
 
-        window.onload = loadVideos;
+        function setupSortMenu() {
+            const menu = document.getElementById('sortDropdownMenu');
+            const btn = document.getElementById('sortDropdownBtn');
+
+            menu.querySelectorAll('[data-sort]').forEach((a) => {
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const selected = a.getAttribute('data-sort') || 'newest';
+                    sortMode = selected === 'most_viewed' ? 'most_viewed' : 'newest';
+
+                    menu.querySelectorAll('[data-sort]').forEach((x) => x.classList.remove('active'));
+                    a.classList.add('active');
+
+                    btn.textContent = sortMode === 'most_viewed'
+                        ? 'Rendezés: Legnézettebb'
+                        : 'Rendezés: Legújabb';
+
+                    loadVideos();
+                });
+            });
+        }
+
+        window.onload = async () => {
+            setupSortMenu();
+            await loadKategoriakMenu();
+            await loadVideos();
+        };
     </script>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>

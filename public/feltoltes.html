@@ -4,8 +4,30 @@
     <meta charset="UTF-8">
     <title>Videó Feltöltés</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .navbar-brand { 
+            font-weight: bold; 
+            color: #ff0000 !important; 
+            font-size: 1.5rem;
+        }
+    </style>
 </head>
-<body class="bg-light p-5">
+<body class="bg-light">
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4 shadow-sm">
+        <div class="container">
+            <a class="navbar-brand" href="/">UTube</a>
+            <div class="ms-auto d-flex align-items-center">
+                <a href="login.html" id="loginBtn" class="btn btn-outline-light me-2" style="display:none;">Bejelentkezés</a>
+                <a href="regisztracio.html" id="regBtn" class="btn btn-danger" style="display:none;">Regisztráció</a>
+                
+                <a href="feltoltes.html" id="uploadBtn" class="btn btn-warning ms-2" style="display:none;">Videó feltöltése</a>
+                
+                <a href="profil.html" id="profilGomb" class="btn btn-primary ms-2" style="display:none;">Profilom</a>
+            </div>
+        </div>
+    </nav>
+
     <div class="container card shadow p-4" style="max-width: 600px;">
         <h3>Új videó feltöltése</h3>
         <form id="uploadForm">
@@ -27,6 +49,13 @@
                 </div>
             </div>
 
+            <div class="mb-3">
+                <label class="form-label small text-muted">Kategóriák (több is választható)</label>
+                <div id="kategoriaContainer" class="d-flex flex-wrap gap-2 border rounded p-3 bg-white">
+                    <p class="small text-muted mb-0 w-100" id="kategoriaBetoltes">Kategóriák betöltése…</p>
+                </div>
+            </div>
+
             <input type="file" id="videoFile" class="form-control mb-3" accept="video/*" required>
             <button type="submit" class="btn btn-danger w-100">Feltöltés indítása</button>
         </form>
@@ -34,6 +63,44 @@
     </div>
 
     <script>
+        function collectKatIds() {
+            const ids = [];
+            document.querySelectorAll('.tag-kat:checked').forEach((cb) => {
+                const id = parseInt(cb.value, 10);
+                if (Number.isFinite(id) && id > 0) ids.push(id);
+            });
+            return ids;
+        }
+
+        async function loadKategoriak() {
+            const box = document.getElementById('kategoriaContainer');
+            const hint = document.getElementById('kategoriaBetoltes');
+            try {
+                const res = await fetch('/kategoriak');
+                if (!res.ok) throw new Error('Szerver hiba');
+                const rows = await res.json();
+                hint.remove();
+                if (!rows.length) {
+                    box.innerHTML =
+                        '<p class="small text-warning mb-0">Nincs kategória az adatbázisban. Tölts fel sorokat a Kategoria táblába.</p>';
+                    return;
+                }
+                rows.forEach((k) => {
+                    const id = `kat_${k.kat_id}`;
+                    const wrap = document.createElement('div');
+                    wrap.className = 'form-check form-check-inline m-0';
+                    wrap.innerHTML = `
+                        <input class="form-check-input tag-kat" type="checkbox" value="${k.kat_id}" id="${id}">
+                        <label class="form-check-label small" for="${id}"></label>`;
+                    wrap.querySelector('label').textContent = k.megnevezes;
+                    box.appendChild(wrap);
+                });
+            } catch {
+                hint.textContent = 'Nem sikerült betölteni a kategóriákat.';
+                hint.classList.add('text-danger');
+            }
+        }
+
         document.getElementById('uploadForm').onsubmit = async (e) => {
             e.preventDefault();
             const status = document.getElementById('status');
@@ -50,6 +117,7 @@
             formData.append('hossz', document.getElementById('hossz').value);
             formData.append('minoseg', document.getElementById('minoseg').value);
             formData.append('felhasznalo_id', userId);
+            formData.append('kat_ids', JSON.stringify(collectKatIds()));
             formData.append('videoFile', document.getElementById('videoFile').files[0]);
 
             status.innerHTML = "Feltöltés folyamatban...";
@@ -66,6 +134,8 @@
                 status.innerHTML = '<div class="alert alert-danger">Hiba történt.</div>';
             }
         };
+
+        loadKategoriak();
     </script>
 </body>
 </html>

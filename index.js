@@ -6,6 +6,34 @@ require('dotenv').config();
 const app = express();
 const saltRounds = 10;
 
+/** FormData / JSON: kat_id lista — max 20, csak érvényes pozitív egészek */
+function parseKatIds(raw) {
+    let arr = [];
+    if (raw == null || raw === '') return [];
+    if (Array.isArray(raw)) arr = raw;
+    else if (typeof raw === 'string') {
+        const s = raw.trim();
+        if (!s) return [];
+        try {
+            const parsed = JSON.parse(s);
+            arr = Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    }
+    const seen = new Set();
+    const out = [];
+    for (const x of arr) {
+        const n = parseInt(String(x), 10);
+        if (!Number.isFinite(n) || n < 1) continue;
+        if (seen.has(n)) continue;
+        seen.add(n);
+        out.push(n);
+        if (out.length >= 20) break;
+    }
+    return out;
+}
+
 // Middleware-ek - EZEKNEK AZ ÚTVONALAK ELŐTT KELL LENNIÜK!
 app.use(express.json()); // Emiatt látja a szerver a beküldött adatokat
 app.use(express.static('public')); // Emiatt működnek a HTML fájlok a public mappából
@@ -15,15 +43,54 @@ app.get('/', (req, res) => {
   res.send('A Node.js szerver fut!');
 });
 
-// 7. pont: Videók listázása
+// Kategóriák a feltöltési űrlaphoz (Kategoria tábla)
+app.get('/kategoriak', async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT kat_id, megnevezes FROM Kategoria ORDER BY megnevezes'
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Adatbázis hiba' });
+    }
+});
+
+// 7. pont: Videók listázása (BYTEA nélkül; kategóriák a Video_Kategoria kapcsolótáblából)
 app.get('/videos', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM Video');
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Adatbázis hiba' });
-  }
+    try {
+        const katId = req.query.kat_id ? parseInt(String(req.query.kat_id), 10) : null;
+        const sort = req.query.sort === 'most_viewed' ? 'most_viewed' : 'newest';
+        const where = Number.isFinite(katId) && katId > 0
+            ? 'WHERE EXISTS (SELECT 1 FROM Video_Kategoria vk2 WHERE vk2.video_id = v.video_id AND vk2.kat_id = $1)'
+            : '';
+        const orderBy = sort === 'most_viewed'
+            ? 'view_count DESC, v.feltoltes_ideje DESC, v.video_id DESC'
+            : 'v.feltoltes_ideje DESC, v.video_id DESC';
+
+        const result = await pool.query(`
+            SELECT v.video_id, v.cim, v.leiras, v.feltoltes_ideje, v.metaadatok, v.felhasznalo_id,
+                COALESCE((
+                    SELECT COUNT(*)::int
+                    FROM Nezettseg n
+                    WHERE n.video_id = v.video_id
+                ), 0) AS view_count,
+                COALESCE(
+                    (SELECT json_agg(json_build_object('kat_id', k.kat_id, 'megnevezes', k.megnevezes))
+                     FROM Video_Kategoria vk
+                     JOIN Kategoria k ON k.kat_id = vk.kat_id
+                     WHERE vk.video_id = v.video_id),
+                    '[]'::json
+                ) AS kategoriak
+            FROM Video v
+            ${where}
+            ORDER BY ${orderBy}
+        `, Number.isFinite(katId) && katId > 0 ? [katId] : []);
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Adatbázis hiba' });
+    }
 });
 
 // 6. pont: Regisztráció hasheléssel és koordinátákkal
@@ -115,25 +182,51 @@ const upload = multer({
 app.post('/upload', upload.single('videoFile'), async (req, res) => {
     const { cim, leiras, felhasznalo_id, hossz, minoseg } = req.body;
     const videoData = req.file.buffer;
+    let katIds = parseKatIds(req.body.kat_ids);
+
+    console.log(`Upload: cim=${cim}, video size=${videoData.length} bytes, kat_ids=${katIds.join(',')}`);
 
     const metaadatok = {
-        hossz: parseInt(hossz),
-        minoseg: minoseg
+        hossz: parseInt(hossz, 10),
+        minoseg: minoseg,
     };
 
+    const client = await pool.connect();
     try {
-        const sql = `
-            INSERT INTO Video (cim, leiras, video_fajl, metaadatok, felhasznalo_id) 
-            VALUES ($1, $2, $3, $4, $5) 
-            RETURNING video_id
-        `;
-        const values = [cim, leiras, videoData, JSON.stringify(metaadatok), felhasznalo_id];
-        
-        const result = await pool.query(sql, values);
-        res.json({ message: 'Sikeres feltöltés!', videoId: result.rows[0].video_id });
+        await client.query('BEGIN');
+
+        const ins = await client.query(
+            `INSERT INTO Video (cim, leiras, video_fajl, metaadatok, felhasznalo_id)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING video_id`,
+            [cim, leiras, videoData, JSON.stringify(metaadatok), felhasznalo_id]
+        );
+        const videoId = ins.rows[0].video_id;
+
+        if (katIds.length > 0) {
+            const chk = await client.query(
+                'SELECT kat_id FROM Kategoria WHERE kat_id = ANY($1::int[])',
+                [katIds]
+            );
+            const allowed = new Set(chk.rows.map((r) => r.kat_id));
+            katIds = katIds.filter((id) => allowed.has(id));
+            for (const kid of katIds) {
+                await client.query(
+                    'INSERT INTO Video_Kategoria (video_id, kat_id) VALUES ($1, $2) ON CONFLICT (video_id, kat_id) DO NOTHING',
+                    [videoId, kid]
+                );
+            }
+        }
+
+        await client.query('COMMIT');
+        console.log(`Upload successful: video_id=${videoId}`);
+        res.json({ message: 'Sikeres feltöltés!', videoId });
     } catch (err) {
-        console.error(err);
+        await client.query('ROLLBACK');
+        console.error('Upload error:', err);
         res.status(500).json({ error: 'Hiba a feltöltés során.' });
+    } finally {
+        client.release();
     }
 });
 
@@ -144,65 +237,162 @@ app.get('/video-stream/:id', async (req, res) => {
         
         if (result.rows.length === 0) return res.status(404).send('Videó nem található');
 
-        const videoBuffer = result.rows[0].video_fajl;
+        let videoBuffer = result.rows[0].video_fajl;
+        
+        // Ha a buffer stringként jön vissza (hex formátum), konvertáljuk
+        if (typeof videoBuffer === 'string') {
+            videoBuffer = Buffer.from(videoBuffer, 'hex');
+        }
+        
+        console.log(`Video stream: id=${req.params.id}, size=${videoBuffer.length} bytes`);
         
         // Beállítjuk a fejlécet, hogy a böngésző tudja: ez egy videó
         res.writeHead(200, {
             'Content-Type': 'video/mp4',
-            'Content-Length': videoBuffer.length
+            'Content-Length': videoBuffer.length,
+            'Accept-Ranges': 'none'
         });
         
         res.end(videoBuffer);
     } catch (err) {
-        console.error(err);
-        res.status(500).send('Szerver hiba');
+        console.error('Video stream error:', err);
+        res.status(500).send('Szerver hiba: ' + err.message);
     }
 });
 
-// Videó fájl kiszolgálása (Streaming)
-app.get('/video-stream/:id', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT video_fajl FROM Video WHERE video_id = $1', [req.params.id]);
-        
-        if (result.rows.length === 0) return res.status(404).send('Videó nem található');
-
-        const videoBuffer = result.rows[0].video_fajl;
-        
-        // Beállítjuk a fejlécet, hogy a böngésző tudja: ez egy videó
-        res.writeHead(200, {
-            'Content-Type': 'video/mp4',
-            'Content-Length': videoBuffer.length
-        });
-        
-        res.end(videoBuffer);
-    } catch (err) {
-        console.error(err);
-        res.status(500).send('Szerver hiba');
-    }
-});
-
-// Videó adatok (cím, leírás) lekérése
+// Videó adatok (cím, leírás, kategóriák) lekérése
 app.get('/video-details/:id', async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT v.cim, v.leiras, v.metaadatok, f.nev as feltolto FROM Video v JOIN Felhasznalo f ON v.felhasznalo_id = f.felhasznalo_id WHERE v.video_id = $1', 
+            `SELECT v.cim, v.leiras, v.metaadatok, f.nev AS feltolto,
+                COALESCE(
+                    (SELECT json_agg(json_build_object('kat_id', k.kat_id, 'megnevezes', k.megnevezes))
+                     FROM Video_Kategoria vk
+                     JOIN Kategoria k ON k.kat_id = vk.kat_id
+                     WHERE vk.video_id = v.video_id),
+                    '[]'::json
+                ) AS kategoriak
+             FROM Video v
+             JOIN Felhasznalo f ON v.felhasznalo_id = f.felhasznalo_id
+             WHERE v.video_id = $1`,
             [req.params.id]
         );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Videó nem található' });
+        }
         res.json(result.rows[0]);
     } catch (err) {
         res.status(500).json({ error: 'Hiba az adatok lekérésekor' });
     }
 });
 
+// Nézettség rögzítése (egyszerű esemény alapú log)
+app.post('/videos/:id/view', async (req, res) => {
+    const videoId = parseInt(String(req.params.id), 10);
+    const felhasznaloId = parseInt(String(req.body?.felhasznalo_id || ''), 10);
+    const duration = Number(req.body?.duration || 0);
+    const watchedSeconds = Number(req.body?.watched_seconds || 0);
+
+    if (!Number.isFinite(videoId) || videoId < 1) {
+        return res.status(400).json({ error: 'Érvénytelen videó azonosító' });
+    }
+
+    // A Nezettseg táblában a PK miatt felhasznalo_id nem lehet NULL
+    if (!Number.isFinite(felhasznaloId) || felhasznaloId < 1) {
+        return res.status(400).json({ error: 'Bejelentkezés szükséges a nézettség mentéséhez' });
+    }
+
+    try {
+        const meta = {
+            duration: Number.isFinite(duration) ? duration : 0,
+            watched_seconds: Number.isFinite(watchedSeconds) ? watchedSeconds : 0,
+            source: 'watch-page',
+        };
+
+        await pool.query(
+            `INSERT INTO Nezettseg (video_id, felhasznalo_id, nezettsegi_adatok, idobelyeg)
+             VALUES ($1, $2, $3::jsonb, CURRENT_TIMESTAMP)`,
+            [videoId, felhasznaloId, JSON.stringify(meta)]
+        );
+        res.status(201).json({ message: 'Nézettség rögzítve' });
+    } catch (err) {
+        console.error('View insert error:', err.message);
+        res.status(500).json({ error: 'Hiba a nézettség mentésekor' });
+    }
+});
+
+// Egyszerű kategória alapú ajánlások az aktuális videóhoz
+app.get('/video-recommendations/:id', async (req, res) => {
+    try {
+        const videoId = parseInt(String(req.params.id), 10);
+        const rawLimit = parseInt(String(req.query.limit || '5'), 10);
+        const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 20) : 5;
+
+        if (!Number.isFinite(videoId) || videoId < 1) {
+            return res.status(400).json({ error: 'Érvénytelen videó azonosító' });
+        }
+
+        const result = await pool.query(
+            `
+            SELECT
+                v.video_id,
+                v.cim,
+                v.leiras,
+                v.metaadatok,
+                v.feltoltes_ideje,
+                COUNT(cur.kat_id)::int AS common_cat_count,
+                COALESCE(
+                    (SELECT json_agg(json_build_object('kat_id', k.kat_id, 'megnevezes', k.megnevezes))
+                     FROM Video_Kategoria vk2
+                     JOIN Kategoria k ON k.kat_id = vk2.kat_id
+                     WHERE vk2.video_id = v.video_id),
+                    '[]'::json
+                ) AS kategoriak
+            FROM Video v
+            LEFT JOIN Video_Kategoria vk ON vk.video_id = v.video_id
+            LEFT JOIN Video_Kategoria cur
+                ON cur.video_id = $1
+               AND cur.kat_id = vk.kat_id
+            WHERE v.video_id <> $1
+            GROUP BY v.video_id, v.cim, v.leiras, v.metaadatok, v.feltoltes_ideje
+            ORDER BY common_cat_count DESC, v.feltoltes_ideje DESC, v.video_id DESC
+            LIMIT $2
+            `,
+            [videoId, limit]
+        );
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Hiba az ajánlások lekérésekor' });
+    }
+});
+
 // Megjegyzések lekérése a videóhoz
 app.get('/comments/:videoId', async (req, res) => {
     try {
-        const result = await pool.query(`
-            SELECT m.szoveg, m.ervenyesseg_eleje, f.nev 
-            FROM Megjegyzes m 
-            JOIN Felhasznalo f ON m.felhasznalo_id = f.felhasznalo_id 
-            WHERE m.video_id = $1 
-            ORDER BY m.ervenyesseg_eleje DESC`, 
+        const sort = req.query.sort === 'relevant' ? 'relevant' : 'newest';
+        const orderBy = sort === 'relevant'
+            ? 'activity_count DESC, m.ervenyesseg_eleje DESC'
+            : 'm.ervenyesseg_eleje DESC';
+
+        const result = await pool.query(
+            `
+            SELECT
+                m.szoveg,
+                m.ervenyesseg_eleje,
+                f.nev,
+                COALESCE(stats.comment_count, 0) AS activity_count
+            FROM Megjegyzes m
+            JOIN Felhasznalo f ON m.felhasznalo_id = f.felhasznalo_id
+            LEFT JOIN (
+                SELECT felhasznalo_id, COUNT(*)::int AS comment_count
+                FROM Megjegyzes
+                GROUP BY felhasznalo_id
+            ) stats ON stats.felhasznalo_id = m.felhasznalo_id
+            WHERE m.video_id = $1
+            ORDER BY ${orderBy}
+            `,
             [req.params.videoId]
         );
         res.json(result.rows);
