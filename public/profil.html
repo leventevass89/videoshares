@@ -33,6 +33,20 @@
             <div id="profilAdatok" class="mt-3">
                 <p>Betöltés...</p>
             </div>
+        <hr>
+
+        <div class="d-grid gap-2">
+            <a href="playlists.html" class="btn btn-warning">
+            Lejátszási listák kezelése
+            </a>
+        </div>
+
+        <hr>
+
+        <h5>Saját lejátszási listáim</h5>
+        <div id="playlistList">
+            <p class="text-muted">Betöltés...</p>
+        </div>
             <button onclick="logout()" class="btn btn-danger w-100 mt-3">Kijelentkezés</button>
         </div>
     </div>
@@ -55,6 +69,33 @@
                 <p><strong>Helyszín:</strong> ${user.lat.toFixed(4)}, ${user.lng.toFixed(4)}</p>
             `;
         }
+        async function loadPlaylistsOnProfile() {
+             const userId = localStorage.getItem('currentUserId');
+            const box = document.getElementById('playlistList');
+
+            if (!userId) return;
+
+            try {
+                const res = await fetch(`/playlists/user/${userId}`);
+                const playlists = await res.json();
+
+                if (!Array.isArray(playlists) || playlists.length === 0) {
+                    box.innerHTML = '<p class="text-muted">Még nincs lejátszási listád.</p>';
+                    return;
+                }
+
+                box.innerHTML = playlists.map(p => `
+                <div class="border rounded p-2 mb-2 bg-light">
+                    <strong>${p.listanev}</strong><br>
+                    <small class="text-muted">
+                    ${p.video_count} videó
+                    </small>
+                </div>`).join('');
+
+             } catch (err) {
+                box.innerHTML = '<p class="text-danger">Nem sikerült betölteni a listákat.</p>';
+            }
+        }
 
         function logout() {
             localStorage.removeItem('currentUserId');
@@ -62,6 +103,7 @@
         }
 
         loadProfil();
+        loadPlaylistsOnProfile
     </script>
 </body>
 </html>

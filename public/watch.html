@@ -27,6 +27,12 @@
                         <source id="videoSource" type="video/mp4">
                         <p id="videoError" class="text-danger m-3" style="display:none;">Videó betöltési hiba</p>
                     </video>
+                    <div class="mt-3">
+                        <button id="likeBtn" class="btn btn-outline-danger btn-sm" onclick="toggleLike()">
+                        🤍 Kedvelem
+                        </button>
+                        <span id="likeCount" class="text-secondary ms-2">0 kedvelés</span>
+                    </div>
                 </div>
 
                 <div class="mt-4 p-3 bg-dark rounded border border-secondary">
@@ -268,11 +274,56 @@
         alert("Nem sikerült kapcsolódni a szerverhez.");
     }
 }
+    async function loadLikeStatus() {
+        const userId = localStorage.getItem('currentUserId') || 0;
+
+        const res = await fetch(`/videos/${videoId}/like-status/${userId}`);
+        const data = await res.json();
+
+        document.getElementById('likeCount').innerText = `${data.like_count} kedvelés`;
+
+        const btn = document.getElementById('likeBtn');
+
+        if (data.liked) {
+            btn.classList.remove('btn-outline-danger');
+            btn.classList.add('btn-danger');
+            btn.innerText = '❤️ Kedvelve';
+        } else {
+            btn.classList.remove('btn-danger');
+            btn.classList.add('btn-outline-danger');
+            btn.innerText = '🤍 Kedvelem';
+        }
+    }
+
+    async function toggleLike() {
+        const userId = localStorage.getItem('currentUserId');
+
+        if (!userId) {
+            alert('Jelentkezz be a kedveléshez!');
+            return;
+        }
+
+        const res = await fetch(`/videos/${videoId}/like`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ felhasznalo_id: userId })
+        });
+
+        const result = await res.json();
+
+        if (!res.ok) {
+            alert(result.error || 'Hiba történt.');
+            return;
+        }
+
+        await loadLikeStatus();
+    }
 
         document.getElementById('sortNewestBtn').addEventListener('click', () => setCommentSort('newest'));
         document.getElementById('sortRelevantBtn').addEventListener('click', () => setCommentSort('relevant'));
 
         init();
+        loadLikeStatus();
     </script>
 </body>
 </html>

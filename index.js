@@ -61,15 +61,24 @@ app.get('/videos', async (req, res) => {
     try {
         const katId = req.query.kat_id ? parseInt(String(req.query.kat_id), 10) : null;
         const sort = req.query.sort === 'most_viewed' ? 'most_viewed' : 'newest';
+
         const where = Number.isFinite(katId) && katId > 0
             ? 'WHERE EXISTS (SELECT 1 FROM Video_Kategoria vk2 WHERE vk2.video_id = v.video_id AND vk2.kat_id = $1)'
             : '';
+
         const orderBy = sort === 'most_viewed'
             ? 'view_count DESC, v.feltoltes_ideje DESC, v.video_id DESC'
             : 'v.feltoltes_ideje DESC, v.video_id DESC';
 
         const result = await pool.query(`
-            SELECT v.video_id, v.cim, v.leiras, v.feltoltes_ideje, v.metaadatok, v.felhasznalo_id,
+            SELECT 
+                v.video_id,
+                v.cim,
+                v.leiras,
+                v.feltoltes_ideje,
+                v.metaadatok,
+                v.felhasznalo_id,
+                f.nev AS feltolto_nev,
                 COALESCE((
                     SELECT COUNT(*)::int
                     FROM Nezettseg n
@@ -83,12 +92,14 @@ app.get('/videos', async (req, res) => {
                     '[]'::json
                 ) AS kategoriak
             FROM Video v
+            JOIN Felhasznalo f ON f.felhasznalo_id = v.felhasznalo_id
             ${where}
             ORDER BY ${orderBy}
         `, Number.isFinite(katId) && katId > 0 ? [katId] : []);
+
         res.json(result.rows);
     } catch (err) {
-        console.error(err);
+        console.error('Videók lekérési hiba:', err.message);
         res.status(500).json({ error: 'Adatbázis hiba' });
     }
 });
@@ -421,6 +432,325 @@ app.post('/comments', async (req, res) => {
     } catch (err) {
         console.error("Adatbázis hiba mentéskor:", err.message);
         res.status(500).json({ error: 'Hiba a mentéskor: ' + err.message });
+    }
+});
+
+// Saját lejátszási listák lekérése
+app.get('/playlists/user/:userId', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT 
+                l.lej_id,
+                l.listanev,
+                COUNT(lv.video_id)::int AS video_count
+             FROM lejatszasi_lista l
+             LEFT JOIN lista_video lv ON lv.lej_id = l.lej_id
+             WHERE l.felhasznalo_id = $1
+             GROUP BY l.lej_id, l.listanev
+             ORDER BY l.lej_id DESC`,
+            [req.params.userId]
+        );
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Playlistek lekérési hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Lejátszási lista létrehozása
+app.post('/playlists', async (req, res) => {
+    const felhasznaloId = parseInt(req.body?.felhasznalo_id, 10);
+    const listanev = req.body?.listanev || req.body?.nev;
+
+    if (!Number.isFinite(felhasznaloId) || felhasznaloId < 1) {
+        return res.status(400).json({ error: 'Bejelentkezés szükséges!' });
+    }
+
+    if (!listanev || !listanev.trim()) {
+        return res.status(400).json({ error: 'A lista neve kötelező!' });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO lejatszasi_lista (listanev, felhasznalo_id)
+             VALUES ($1, $2)
+             RETURNING lej_id, listanev`,
+            [listanev.trim(), felhasznaloId]
+        );
+
+        res.status(201).json({
+            message: 'Lejátszási lista létrehozva!',
+            playlist: result.rows[0]
+        });
+
+    } catch (err) {
+        console.error('Playlist létrehozási hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Lejátszási lista törlése
+app.delete('/playlists/:lejId', async (req, res) => {
+    const lejId = parseInt(req.params.lejId, 10);
+    const felhasznaloId = parseInt(req.body?.felhasznalo_id, 10);
+
+    try {
+        const result = await pool.query(
+            `DELETE FROM lejatszasi_lista
+             WHERE lej_id = $1 AND felhasznalo_id = $2
+             RETURNING lej_id`,
+            [lejId, felhasznaloId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Lista nem található vagy nem a tiéd.' });
+        }
+
+        res.json({ message: 'Lejátszási lista törölve.' });
+    } catch (err) {
+        console.error('Playlist törlési hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Lista videóinak lekérése
+app.get('/playlists/:lejId/videos', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT 
+                v.video_id,
+                v.cim,
+                v.leiras,
+                v.metaadatok
+             FROM lista_video lv
+             JOIN video v ON v.video_id = lv.video_id
+             WHERE lv.lej_id = $1
+             ORDER BY v.feltoltes_ideje DESC`,
+            [req.params.lejId]
+        );
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Playlist videók lekérési hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Videó hozzáadása lejátszási listához
+app.post('/playlists/:lejId/videos', async (req, res) => {
+    const lejId = parseInt(req.params.lejId, 10);
+    const videoId = parseInt(req.body?.video_id, 10);
+    const felhasznaloId = parseInt(req.body?.felhasznalo_id, 10);
+
+    if (!Number.isFinite(lejId) || !Number.isFinite(videoId) || !Number.isFinite(felhasznaloId)) {
+        return res.status(400).json({ error: 'Hiányzó vagy hibás adatok.' });
+    }
+
+    try {
+        const ownerCheck = await pool.query(
+            `SELECT lej_id FROM lejatszasi_lista
+             WHERE lej_id = $1 AND felhasznalo_id = $2`,
+            [lejId, felhasznaloId]
+        );
+
+        if (ownerCheck.rows.length === 0) {
+            return res.status(403).json({ error: 'Ehhez a listához nincs jogosultságod.' });
+        }
+
+        await pool.query(
+            `INSERT INTO lista_video (lej_id, video_id)
+             VALUES ($1, $2)
+             ON CONFLICT (lej_id, video_id) DO NOTHING`,
+            [lejId, videoId]
+        );
+
+        res.json({ message: 'Videó hozzáadva a listához.' });
+    } catch (err) {
+        console.error('Videó playlisthez adási hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Lejátszási lista átnevezése
+app.put('/playlists/:lejId', async (req, res) => {
+    const lejId = parseInt(req.params.lejId, 10);
+    const felhasznaloId = parseInt(req.body?.felhasznalo_id, 10);
+    const listanev = req.body?.listanev;
+
+    if (!Number.isFinite(lejId) || lejId < 1) {
+        return res.status(400).json({ error: 'Érvénytelen lista azonosító!' });
+    }
+
+    if (!Number.isFinite(felhasznaloId) || felhasznaloId < 1) {
+        return res.status(400).json({ error: 'Bejelentkezés szükséges!' });
+    }
+
+    if (!listanev || !listanev.trim()) {
+        return res.status(400).json({ error: 'A lista neve kötelező!' });
+    }
+
+    try {
+        const result = await pool.query(
+            `UPDATE lejatszasi_lista
+             SET listanev = $1
+             WHERE lej_id = $2
+             AND felhasznalo_id = $3
+             RETURNING lej_id, listanev`,
+            [listanev.trim(), lejId, felhasznaloId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Lista nem található vagy nem a tiéd.'
+            });
+        }
+
+        res.json({
+            message: 'Lejátszási lista átnevezve!',
+            playlist: result.rows[0]
+        });
+
+    } catch (err) {
+        console.error('Playlist átnevezési hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/users/:userId/profile-videos', async (req, res) => {
+    try {
+        const userResult = await pool.query(
+            `SELECT felhasznalo_id, nev, email, reg_dat
+             FROM felhasznalo
+             WHERE felhasznalo_id = $1`,
+            [req.params.userId]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Felhasználó nem található.' });
+        }
+
+        const videosResult = await pool.query(
+            `SELECT video_id, cim, leiras, metaadatok, feltoltes_ideje
+             FROM video
+             WHERE felhasznalo_id = $1
+             ORDER BY feltoltes_ideje DESC`,
+            [req.params.userId]
+        );
+
+        res.json({
+            user: userResult.rows[0],
+            videos: videosResult.rows
+        });
+
+    } catch (err) {
+        console.error('Feltöltő profil hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Like / unlike = kedvenc videó hozzáadása vagy eltávolítása
+app.post('/videos/:videoId/like', async (req, res) => {
+    const videoId = parseInt(req.params.videoId, 10);
+    const felhasznaloId = parseInt(req.body?.felhasznalo_id, 10);
+
+    if (!Number.isFinite(videoId) || videoId < 1) {
+        return res.status(400).json({ error: 'Érvénytelen videó azonosító!' });
+    }
+
+    if (!Number.isFinite(felhasznaloId) || felhasznaloId < 1) {
+        return res.status(400).json({ error: 'Bejelentkezés szükséges!' });
+    }
+
+    try {
+        const existing = await pool.query(
+            `SELECT 1 FROM kedvenc_video
+             WHERE felhasznalo_id = $1 AND video_id = $2`,
+            [felhasznaloId, videoId]
+        );
+
+        if (existing.rows.length > 0) {
+            await pool.query(
+                `DELETE FROM kedvenc_video
+                 WHERE felhasznalo_id = $1 AND video_id = $2`,
+                [felhasznaloId, videoId]
+            );
+
+            return res.json({
+                liked: false,
+                message: 'Kedvelés eltávolítva.'
+            });
+        }
+
+        await pool.query(
+            `INSERT INTO kedvenc_video (felhasznalo_id, video_id)
+             VALUES ($1, $2)`,
+            [felhasznaloId, videoId]
+        );
+
+        res.json({
+            liked: true,
+            message: 'Videó hozzáadva a kedvencekhez.'
+        });
+
+    } catch (err) {
+        console.error('Like hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Like állapot + darabszám
+app.get('/videos/:videoId/like-status/:userId', async (req, res) => {
+    const videoId = parseInt(req.params.videoId, 10);
+    const userId = parseInt(req.params.userId, 10);
+
+    try {
+        const countResult = await pool.query(
+            `SELECT COUNT(*)::int AS like_count
+             FROM kedvenc_video
+             WHERE video_id = $1`,
+            [videoId]
+        );
+
+        const likedResult = await pool.query(
+            `SELECT 1 FROM kedvenc_video
+             WHERE video_id = $1 AND felhasznalo_id = $2`,
+            [videoId, userId]
+        );
+
+        res.json({
+            like_count: countResult.rows[0].like_count,
+            liked: likedResult.rows.length > 0
+        });
+
+    } catch (err) {
+        console.error('Like státusz hiba:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Felhasználó kedvenc videói
+app.get('/users/:userId/favorites', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT 
+                v.video_id,
+                v.cim,
+                v.leiras,
+                v.metaadatok,
+                v.feltoltes_ideje,
+                kv.kedveles_ideje
+             FROM kedvenc_video kv
+             JOIN video v ON v.video_id = kv.video_id
+             WHERE kv.felhasznalo_id = $1
+             ORDER BY kv.kedveles_ideje DESC`,
+            [req.params.userId]
+        );
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Kedvencek lekérési hiba:', err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 
